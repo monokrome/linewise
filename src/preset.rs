@@ -83,10 +83,11 @@ pub struct PresetMeta {
 }
 
 /// How records are delimited in the input
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(tag = "format", rename_all = "lowercase")]
 pub enum RecordFormat {
     /// Newline-delimited text lines
+    #[default]
     Lines,
     /// Binary with u16 length prefix
     Length16,
@@ -94,12 +95,6 @@ pub enum RecordFormat {
     Length32,
     /// Custom regex pattern for boundaries
     Custom { pattern: String },
-}
-
-impl Default for RecordFormat {
-    fn default() -> Self {
-        Self::Lines
-    }
 }
 
 /// Rule for auto-detecting which preset to use
@@ -173,13 +168,16 @@ pub struct GlossConfig {
 /// Base85 character sets
 pub mod base85_charsets {
     /// Standard ASCII85 charset (Adobe variant)
-    pub const ASCII85: &[u8; 85] = b"!\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstu";
+    pub const ASCII85: &[u8; 85] =
+        b"!\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstu";
 
     /// Z85 charset (ZeroMQ)
-    pub const Z85: &[u8; 85] = b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.-:+=^!/*?&<>()[]{}@%$#";
+    pub const Z85: &[u8; 85] =
+        b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.-:+=^!/*?&<>()[]{}@%$#";
 
     /// Borderlands 4 custom charset
-    pub const BL4: &[u8; 85] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz!#$%&()*+-;<=>?@^_`{/}~";
+    pub const BL4: &[u8; 85] =
+        b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz!#$%&()*+-;<=>?@^_`{/}~";
 
     /// Get charset by name
     pub fn get(name: &str) -> Option<&'static [u8; 85]> {
@@ -288,7 +286,7 @@ impl GlossConfig {
                     .base85_charset
                     .as_ref()
                     .and_then(|name| base85_charsets::get(name))
-                    .unwrap_or(&base85_charsets::BL4);
+                    .unwrap_or(base85_charsets::BL4);
                 match base85_charsets::decode(input, charset) {
                     Ok(bytes) => Ok(format!("[hex] {}", hex::encode(&bytes))),
                     Err(_) => Ok(format!("[raw] {}", input)),
@@ -306,7 +304,9 @@ impl GlossConfig {
 
         if let Some(caps) = re.captures(record) {
             // Use first capture group, or whole match if no groups
-            let segment = caps.get(1).or_else(|| caps.get(0))
+            let segment = caps
+                .get(1)
+                .or_else(|| caps.get(0))
                 .map(|m| m.as_str())
                 .unwrap_or(record);
             Ok(segment.to_string())
@@ -324,7 +324,7 @@ impl GlossConfig {
                     .base85_charset
                     .as_ref()
                     .and_then(|name| base85_charsets::get(name))
-                    .unwrap_or(&base85_charsets::ASCII85);
+                    .unwrap_or(base85_charsets::ASCII85);
 
                 let bytes = base85_charsets::decode(record, charset)
                     .map_err(|e| anyhow::anyhow!("base85 decode error: {}", e))?;
@@ -441,11 +441,6 @@ impl PresetManager {
         mgr
     }
 
-    /// Add a custom search path
-    pub fn add_search_path(&mut self, path: impl Into<PathBuf>) {
-        self.search_paths.insert(0, path.into());
-    }
-
     /// Load all presets (embedded defaults + search paths)
     pub fn load_all(&mut self) -> Result<()> {
         // Load embedded presets first (can be overridden by user presets)
@@ -513,48 +508,6 @@ impl PresetManager {
     /// Get a preset by name
     pub fn get(&self, name: &str) -> Option<&Preset> {
         self.presets.get(name)
-    }
-
-    /// Auto-detect which preset to use based on sample records
-    pub fn detect(&self, records: &[Vec<u8>], sample_size: usize) -> Option<&Preset> {
-        use rand::seq::SliceRandom;
-
-        if records.is_empty() || self.presets.is_empty() {
-            return None;
-        }
-
-        let mut rng = rand::thread_rng();
-        let samples: Vec<&Vec<u8>> = if records.len() <= sample_size {
-            records.iter().collect()
-        } else {
-            records.choose_multiple(&mut rng, sample_size).collect()
-        };
-
-        let mut best_match: Option<(&str, usize)> = None;
-
-        for (name, preset) in &self.presets {
-            if preset.detect.is_empty() {
-                continue;
-            }
-
-            let matches = samples
-                .iter()
-                .filter(|record| preset.detect.iter().all(|rule| rule.matches(record)))
-                .count();
-
-            let threshold = (samples.len() * 80) / 100;
-            if matches >= threshold {
-                match &best_match {
-                    None => best_match = Some((name, matches)),
-                    Some((_, best_count)) if matches > *best_count => {
-                        best_match = Some((name, matches));
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        best_match.and_then(|(name, _)| self.presets.get(name))
     }
 
     /// List all loaded presets

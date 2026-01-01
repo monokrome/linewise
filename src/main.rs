@@ -515,7 +515,9 @@ async fn main() -> Result<()> {
 
     // Handle -i flag for interactive mode
     if cli.interactive {
-        let input = cli.input.as_ref()
+        let input = cli
+            .input
+            .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Interactive mode requires an input file"))?;
         let records = read_records(input, &cli.format)?;
         let cfg = config::Config::load().await?;
@@ -681,9 +683,11 @@ async fn auto_detect_mode(
     let mut mgr = preset::PresetManager::new();
     mgr.load_all()?;
 
-    let presets: Vec<_> = mgr.list().iter().filter_map(|name| {
-        mgr.get(name).map(|p| (name.to_string(), p.clone()))
-    }).collect();
+    let presets: Vec<_> = mgr
+        .list()
+        .iter()
+        .filter_map(|name| mgr.get(name).map(|p| (name.to_string(), p.clone())))
+        .collect();
 
     if presets.is_empty() {
         eprintln!("Warning: No presets found. Install presets to ~/.config/linewise/presets/");
@@ -735,9 +739,8 @@ async fn auto_detect_mode(
                                 }
                             } else {
                                 // Extract fields
-                                let gloss_fields: Vec<_> = preset.fields.iter()
-                                    .filter(|f| f.from_gloss)
-                                    .collect();
+                                let gloss_fields: Vec<_> =
+                                    preset.fields.iter().filter(|f| f.from_gloss).collect();
                                 if gloss_fields.is_empty() {
                                     if align {
                                         rows.push(vec![result.clone()]);
@@ -762,12 +765,10 @@ async fn auto_detect_mode(
                             }
                         }
                     }
+                } else if align {
+                    rows.push(vec![name.clone(), trimmed.to_string()]);
                 } else {
-                    if align {
-                        rows.push(vec![name.clone(), trimmed.to_string()]);
-                    } else {
-                        println!("[{}] {}", name, trimmed);
-                    }
+                    println!("[{}] {}", name, trimmed);
                 }
             }
             None => {
@@ -790,14 +791,17 @@ async fn auto_detect_mode(
 
 /// Extract field values from gloss output
 fn extract_field_values(gloss_output: &str, fields: &[&preset::FieldExtractor]) -> Vec<String> {
-    fields.iter().map(|field| {
-        regex::Regex::new(&field.pattern)
-            .ok()
-            .and_then(|re| re.captures(gloss_output))
-            .and_then(|caps| caps.get(1).or_else(|| caps.get(0)))
-            .map(|m| m.as_str().to_string())
-            .unwrap_or_default()
-    }).collect()
+    fields
+        .iter()
+        .map(|field| {
+            regex::Regex::new(&field.pattern)
+                .ok()
+                .and_then(|re| re.captures(gloss_output))
+                .and_then(|caps| caps.get(1).or_else(|| caps.get(0)))
+                .map(|m| m.as_str().to_string())
+                .unwrap_or_default()
+        })
+        .collect()
 }
 
 /// Print rows as aligned table
@@ -818,9 +822,17 @@ fn print_aligned_table(rows: &[Vec<String>]) {
             println!();
             continue;
         }
-        let formatted: Vec<String> = row.iter().enumerate().map(|(i, cell)| {
-            format!("{:width$}", cell, width = widths.get(i).copied().unwrap_or(0))
-        }).collect();
+        let formatted: Vec<String> = row
+            .iter()
+            .enumerate()
+            .map(|(i, cell)| {
+                format!(
+                    "{:width$}",
+                    cell,
+                    width = widths.get(i).copied().unwrap_or(0)
+                )
+            })
+            .collect();
         println!("{}", formatted.join("  "));
     }
 }
@@ -864,7 +876,8 @@ async fn gloss_command(
             cache: true,
         }
     } else if let Some(ref p) = preset {
-        p.gloss.clone()
+        p.gloss
+            .clone()
             .ok_or_else(|| anyhow::anyhow!("Preset has no gloss config"))?
     } else {
         anyhow::bail!("Must specify --preset, --transform, or --command");
@@ -915,7 +928,8 @@ fn print_extracted_fields(_input: &str, gloss_output: &str, fields: &[&preset::F
     // Extract each field from the gloss output
     for field in fields {
         if let Ok(re) = regex::Regex::new(&field.pattern) {
-            let value = re.captures(gloss_output)
+            let value = re
+                .captures(gloss_output)
                 .and_then(|caps| caps.get(1).or_else(|| caps.get(0)))
                 .map(|m| m.as_str().to_string())
                 .unwrap_or_default();
@@ -1120,7 +1134,7 @@ fn boundary_detection(records: &[Vec<u8>], max_positions: usize) {
         .flat_map(|&(start, end, is_fixed)| {
             let len = end - start + 1;
             let sym = if is_fixed { '═' } else { '─' };
-            std::iter::once('│').chain(std::iter::repeat(sym).take(len))
+            std::iter::once('│').chain(std::iter::repeat_n(sym, len))
         })
         .chain(std::iter::once('│'))
         .collect();
