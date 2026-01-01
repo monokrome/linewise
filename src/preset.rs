@@ -151,12 +151,87 @@ pub struct GlossConfig {
     /// Built-in transform: base85, base64, hex, none
     #[serde(default)]
     pub transform: Option<String>,
+    /// Base85 variant: "standard" (ASCII85), "z85", "bl4" (Borderlands 4)
+    /// Only used when transform = "base85"
+    #[serde(default)]
+    pub base85_charset: Option<String>,
     /// External command to run for transformation
     #[serde(default)]
     pub command: Option<Vec<String>>,
     /// Cache transformed results
     #[serde(default = "default_true")]
     pub cache: bool,
+}
+
+/// Base85 character sets
+pub mod base85_charsets {
+    /// Standard ASCII85 charset (Adobe variant)
+    pub const ASCII85: &[u8; 85] = b"!\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstu";
+
+    /// Z85 charset (ZeroMQ)
+    pub const Z85: &[u8; 85] = b"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ.-:+=^!/*?&<>()[]{}@%$#";
+
+    /// Borderlands 4 custom charset
+    pub const BL4: &[u8; 85] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz!#$%&()*+-;<=>?@^_`{/}~";
+
+    /// Get charset by name
+    pub fn get(name: &str) -> Option<&'static [u8; 85]> {
+        match name.to_lowercase().as_str() {
+            "ascii85" | "standard" => Some(ASCII85),
+            "z85" | "zeromq" => Some(Z85),
+            "bl4" | "borderlands" | "borderlands4" => Some(BL4),
+            _ => None,
+        }
+    }
+
+    /// Decode base85 with custom charset
+    pub fn decode(input: &str, charset: &[u8; 85]) -> Result<Vec<u8>, String> {
+        // Build reverse lookup table
+        let mut lookup = [255u8; 256];
+        for (i, &c) in charset.iter().enumerate() {
+            lookup[c as usize] = i as u8;
+        }
+
+        let bytes = input.as_bytes();
+        let mut result = Vec::with_capacity(bytes.len() * 4 / 5);
+
+        // Process in chunks of 5 characters -> 4 bytes
+        let mut i = 0;
+        while i < bytes.len() {
+            let chunk_len = (bytes.len() - i).min(5);
+            let mut acc: u64 = 0;
+
+            for j in 0..chunk_len {
+                let c = bytes[i + j];
+                let val = lookup[c as usize];
+                if val == 255 {
+                    return Err(format!("invalid base85 character: {:?}", c as char));
+                }
+                acc = acc * 85 + val as u64;
+            }
+
+            // Pad incomplete chunks
+            for _ in chunk_len..5 {
+                acc = acc * 85 + 84; // Pad with last char value
+            }
+
+            // Extract bytes (big-endian)
+            let output_bytes = match chunk_len {
+                5 => 4,
+                4 => 3,
+                3 => 2,
+                2 => 1,
+                _ => 0,
+            };
+
+            let bytes_out = acc.to_be_bytes();
+            result.extend_from_slice(&bytes_out[4..4 + output_bytes]);
+
+            i += chunk_len;
+        }
+
+        Ok(result)
+    }
 }
 
 fn default_true() -> bool {
@@ -182,9 +257,15 @@ impl GlossConfig {
     fn apply_builtin(&self, transform: &str, record: &str) -> Result<String> {
         match transform {
             "base85" => {
-                // Decode base85 and show as hex
-                let bytes = base85::decode(record)
-                    .map_err(|e| anyhow::anyhow!("base85 decode error: {:?}", e))?;
+                // Use configured charset or default to ASCII85
+                let charset = self
+                    .base85_charset
+                    .as_ref()
+                    .and_then(|name| base85_charsets::get(name))
+                    .unwrap_or(&base85_charsets::ASCII85);
+
+                let bytes = base85_charsets::decode(record, charset)
+                    .map_err(|e| anyhow::anyhow!("base85 decode error: {}", e))?;
                 Ok(hex::encode(&bytes))
             }
             "base64" => {

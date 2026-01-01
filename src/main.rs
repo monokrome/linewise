@@ -30,6 +30,10 @@ struct Cli {
     )]
     format: String,
 
+    /// Disable colorized output (plain text)
+    #[arg(short = 'p', long = "plain", global = true)]
+    plain: bool,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -655,12 +659,14 @@ async fn gloss_command(
     let gloss = if let Some(cmd) = command {
         preset::GlossConfig {
             transform: None,
+            base85_charset: None,
             command: Some(cmd.split_whitespace().map(String::from).collect()),
             cache: true,
         }
     } else if let Some(t) = transform {
         preset::GlossConfig {
             transform: Some(t),
+            base85_charset: None,
             command: None,
             cache: true,
         }

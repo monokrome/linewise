@@ -1,0 +1,12 @@
+[book]
+authors = ["monokrome"]
+language = "en"
+src = "src"
+title = "Linewise Documentation"
+
+[build]
+build-dir = "../book"
+
+[output.html]
+git-repository-url = "https://github.com/monokrome/linewise"
+edit-url-template = "https://github.com/monokrome/linewise/edit/main/docs/{path}"
