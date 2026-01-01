@@ -158,6 +158,10 @@ pub struct GlossConfig {
     /// External command to run for transformation
     #[serde(default)]
     pub command: Option<Vec<String>>,
+    /// Regex pattern to extract segments from input (with capture group)
+    /// If set, only the captured segment is passed to the transform/command
+    #[serde(default)]
+    pub segment: Option<String>,
     /// Cache transformed results
     #[serde(default = "default_true")]
     pub cache: bool,
@@ -241,17 +245,41 @@ fn default_true() -> bool {
 impl GlossConfig {
     /// Apply the gloss transform to a record
     pub async fn apply(&self, record: &str) -> Result<String> {
+        // Extract segment if pattern is configured
+        let input = if let Some(pattern) = &self.segment {
+            self.extract_segment(pattern, record)?
+        } else {
+            record.to_string()
+        };
+
         // Try built-in transform first
         if let Some(transform) = &self.transform {
-            return self.apply_builtin(transform, record);
+            return self.apply_builtin(transform, &input);
         }
 
         // Try external command
         if let Some(cmd) = &self.command {
-            return self.apply_command(cmd, record).await;
+            return self.apply_command(cmd, &input).await;
         }
 
-        Ok(record.to_string())
+        Ok(input)
+    }
+
+    /// Extract segment from record using regex pattern
+    fn extract_segment(&self, pattern: &str, record: &str) -> Result<String> {
+        let re = regex::Regex::new(pattern)
+            .map_err(|e| anyhow::anyhow!("invalid segment pattern: {}", e))?;
+
+        if let Some(caps) = re.captures(record) {
+            // Use first capture group, or whole match if no groups
+            let segment = caps.get(1).or_else(|| caps.get(0))
+                .map(|m| m.as_str())
+                .unwrap_or(record);
+            Ok(segment.to_string())
+        } else {
+            // No match - return original record
+            Ok(record.to_string())
+        }
     }
 
     fn apply_builtin(&self, transform: &str, record: &str) -> Result<String> {

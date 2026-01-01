@@ -661,6 +661,7 @@ async fn gloss_command(
             transform: None,
             base85_charset: None,
             command: Some(cmd.split_whitespace().map(String::from).collect()),
+            segment: None,
             cache: true,
         }
     } else if let Some(t) = transform {
@@ -668,6 +669,7 @@ async fn gloss_command(
             transform: Some(t),
             base85_charset: None,
             command: None,
+            segment: None,
             cache: true,
         }
     } else if let Some(name) = preset_name {
