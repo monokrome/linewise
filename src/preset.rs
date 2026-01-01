@@ -399,6 +399,23 @@ pub struct PresetManager {
     search_paths: Vec<PathBuf>,
 }
 
+/// Embedded default presets (compiled into binary)
+mod embedded_presets {
+    pub const ASCII85: &str = include_str!("../presets/ascii85.toml");
+    pub const BASE64: &str = include_str!("../presets/base64.toml");
+    pub const HEX: &str = include_str!("../presets/hex.toml");
+    pub const JWT: &str = include_str!("../presets/jwt.toml");
+    pub const Z85: &str = include_str!("../presets/z85.toml");
+
+    pub const ALL: &[(&str, &str)] = &[
+        ("ascii85", ASCII85),
+        ("base64", BASE64),
+        ("hex", HEX),
+        ("jwt", JWT),
+        ("z85", Z85),
+    ];
+}
+
 impl PresetManager {
     pub fn new() -> Self {
         let mut mgr = Self::default();
@@ -429,14 +446,32 @@ impl PresetManager {
         self.search_paths.insert(0, path.into());
     }
 
-    /// Load all presets from search paths
+    /// Load all presets (embedded defaults + search paths)
     pub fn load_all(&mut self) -> Result<()> {
+        // Load embedded presets first (can be overridden by user presets)
+        self.load_embedded();
+
+        // Load from search paths (user presets override embedded)
         for path in &self.search_paths.clone() {
             if path.is_dir() {
                 self.load_from_dir(path)?;
             }
         }
         Ok(())
+    }
+
+    /// Load embedded default presets
+    fn load_embedded(&mut self) {
+        for (name, content) in embedded_presets::ALL {
+            match toml::from_str::<Preset>(content) {
+                Ok(preset) => {
+                    self.presets.insert(name.to_string(), preset);
+                }
+                Err(e) => {
+                    eprintln!("Warning: failed to parse embedded preset '{}': {}", name, e);
+                }
+            }
+        }
     }
 
     /// Load presets from a directory
