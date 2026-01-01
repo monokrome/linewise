@@ -46,6 +46,10 @@ struct Cli {
     #[arg(short = 'r', long = "raw", global = true)]
     raw: bool,
 
+    /// Align output as a table (default: TSV for piping to cut)
+    #[arg(short = 'a', long = "align", global = true)]
+    align: bool,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -523,7 +527,7 @@ async fn main() -> Result<()> {
     let command = match cli.command {
         Some(cmd) => cmd,
         None => {
-            return auto_detect_mode(cli.input.as_ref(), cli.raw, cli.no_gloss).await;
+            return auto_detect_mode(cli.input.as_ref(), cli.raw, cli.no_gloss, cli.align).await;
         }
     };
 
@@ -669,6 +673,7 @@ async fn auto_detect_mode(
     input: Option<&PathBuf>,
     raw: bool,
     no_gloss: bool,
+    align: bool,
 ) -> Result<()> {
     use std::io::{self, BufRead};
 
@@ -690,11 +695,18 @@ async fn auto_detect_mode(
         None => Box::new(io::BufReader::new(io::stdin())),
     };
 
+    // Collect rows for alignment mode
+    let mut rows: Vec<Vec<String>> = Vec::new();
+
     for line in reader.lines() {
         let line = line?;
         let trimmed = line.trim();
         if trimmed.is_empty() {
-            println!();
+            if align {
+                rows.push(vec![]);
+            } else {
+                println!();
+            }
             continue;
         }
 
@@ -710,37 +722,107 @@ async fn auto_detect_mode(
                     match gloss.apply(trimmed).await {
                         Ok(result) => {
                             if no_gloss {
-                                // Just show the input was recognized
-                                println!("[{}] {}", name, trimmed);
+                                if align {
+                                    rows.push(vec![name.clone(), trimmed.to_string()]);
+                                } else {
+                                    println!("[{}] {}", name, trimmed);
+                                }
                             } else if raw {
-                                println!("{}", result);
+                                if align {
+                                    rows.push(vec![result.clone()]);
+                                } else {
+                                    println!("{}", result);
+                                }
                             } else {
                                 // Extract fields
                                 let gloss_fields: Vec<_> = preset.fields.iter()
                                     .filter(|f| f.from_gloss)
                                     .collect();
                                 if gloss_fields.is_empty() {
-                                    println!("{}", result);
+                                    if align {
+                                        rows.push(vec![result.clone()]);
+                                    } else {
+                                        println!("{}", result);
+                                    }
                                 } else {
-                                    print_extracted_fields(trimmed, &result, &gloss_fields);
+                                    let values = extract_field_values(&result, &gloss_fields);
+                                    if align {
+                                        rows.push(values);
+                                    } else {
+                                        println!("{}", values.join("\t"));
+                                    }
                                 }
                             }
                         }
-                        Err(e) => eprintln!("[{}] Error: {}", name, e),
+                        Err(e) => {
+                            if align {
+                                rows.push(vec![format!("[{}] Error: {}", name, e)]);
+                            } else {
+                                eprintln!("[{}] Error: {}", name, e);
+                            }
+                        }
                     }
                 } else {
-                    // Preset matched but no gloss - just output the line
-                    println!("[{}] {}", name, trimmed);
+                    if align {
+                        rows.push(vec![name.clone(), trimmed.to_string()]);
+                    } else {
+                        println!("[{}] {}", name, trimmed);
+                    }
                 }
             }
             None => {
-                // No matching preset - pass through
-                println!("{}", trimmed);
+                if align {
+                    rows.push(vec![trimmed.to_string()]);
+                } else {
+                    println!("{}", trimmed);
+                }
             }
         }
     }
 
+    // Print aligned table
+    if align && !rows.is_empty() {
+        print_aligned_table(&rows);
+    }
+
     Ok(())
+}
+
+/// Extract field values from gloss output
+fn extract_field_values(gloss_output: &str, fields: &[&preset::FieldExtractor]) -> Vec<String> {
+    fields.iter().map(|field| {
+        regex::Regex::new(&field.pattern)
+            .ok()
+            .and_then(|re| re.captures(gloss_output))
+            .and_then(|caps| caps.get(1).or_else(|| caps.get(0)))
+            .map(|m| m.as_str().to_string())
+            .unwrap_or_default()
+    }).collect()
+}
+
+/// Print rows as aligned table
+fn print_aligned_table(rows: &[Vec<String>]) {
+    // Find max width for each column
+    let max_cols = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+    let mut widths = vec![0usize; max_cols];
+
+    for row in rows {
+        for (i, cell) in row.iter().enumerate() {
+            widths[i] = widths[i].max(cell.len());
+        }
+    }
+
+    // Print rows with padding
+    for row in rows {
+        if row.is_empty() {
+            println!();
+            continue;
+        }
+        let formatted: Vec<String> = row.iter().enumerate().map(|(i, cell)| {
+            format!("{:width$}", cell, width = widths.get(i).copied().unwrap_or(0))
+        }).collect();
+        println!("{}", formatted.join("  "));
+    }
 }
 
 /// Apply gloss transform to input
@@ -826,27 +908,25 @@ async fn gloss_command(
     Ok(())
 }
 
-/// Extract and print fields from gloss output
-fn print_extracted_fields(input: &str, gloss_output: &str, fields: &[&preset::FieldExtractor]) {
-    // Find max field name length for alignment
-    let max_name_len = fields.iter().map(|f| f.name.len()).max().unwrap_or(0);
-    let max_name_len = max_name_len.max(5); // At least "Input" width
-
-    // First show the input segment
-    println!("{:>width$}: {}", "Input", input, width = max_name_len);
+/// Extract and print fields from gloss output as TSV (one line per record)
+fn print_extracted_fields(_input: &str, gloss_output: &str, fields: &[&preset::FieldExtractor]) {
+    let mut values: Vec<String> = Vec::new();
 
     // Extract each field from the gloss output
     for field in fields {
         if let Ok(re) = regex::Regex::new(&field.pattern) {
-            if let Some(caps) = re.captures(gloss_output) {
-                let value = caps.get(1).or_else(|| caps.get(0))
-                    .map(|m| m.as_str())
-                    .unwrap_or("");
-                println!("{:>width$}: {}", field.name, value, width = max_name_len);
-            }
+            let value = re.captures(gloss_output)
+                .and_then(|caps| caps.get(1).or_else(|| caps.get(0)))
+                .map(|m| m.as_str().to_string())
+                .unwrap_or_default();
+            values.push(value);
+        } else {
+            values.push(String::new());
         }
     }
-    println!(); // Blank line between records
+
+    // Output as tab-separated line
+    println!("{}", values.join("\t"));
 }
 
 fn split_by_header(records: &[Vec<u8>], header_len: usize, output_dir: &PathBuf) -> Result<()> {
