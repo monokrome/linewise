@@ -17,9 +17,13 @@ use std::path::PathBuf;
 #[command(about = "Pattern analysis and transformation tool for record-oriented data")]
 #[command(version)]
 struct Cli {
+    /// Input file (default: stdin). Use with no subcommand for auto-detect mode
+    #[arg(global = true)]
+    input: Option<PathBuf>,
+
     /// Open file in interactive mode
     #[arg(short = 'i', long = "interactive", global = true)]
-    interactive: Option<PathBuf>,
+    interactive: bool,
 
     /// Input format for -i mode
     #[arg(
@@ -33,6 +37,14 @@ struct Cli {
     /// Disable colorized output (plain text)
     #[arg(short = 'p', long = "plain", global = true)]
     plain: bool,
+
+    /// Skip gloss output (just show raw decoded data)
+    #[arg(short = 'G', long = "no-gloss", global = true)]
+    no_gloss: bool,
+
+    /// Show raw output instead of extracted fields
+    #[arg(short = 'r', long = "raw", global = true)]
+    raw: bool,
 
     #[command(subcommand)]
     command: Option<Command>,
@@ -238,10 +250,6 @@ enum Command {
         /// External command to run for transform
         #[arg(short, long)]
         command: Option<String>,
-
-        /// Show raw output instead of extracted fields
-        #[arg(short, long)]
-        raw: bool,
     },
 
     /// List available presets
@@ -501,17 +509,23 @@ fn most_common(values: &[u8]) -> (u8, usize) {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
-    // Handle -i flag for quick interactive mode
-    if let Some(input) = cli.interactive {
-        let records = read_records(&input, &cli.format)?;
+    // Handle -i flag for interactive mode
+    if cli.interactive {
+        let input = cli.input.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Interactive mode requires an input file"))?;
+        let records = read_records(input, &cli.format)?;
         let cfg = config::Config::load().await?;
         let auto_preset = cfg.detect_preset(&records, 50);
         return interactive::run_interactive(records, auto_preset);
     }
 
-    let command = cli
-        .command
-        .ok_or_else(|| anyhow::anyhow!("No command specified. Use -i <file> or a subcommand."))?;
+    // No subcommand - run auto-detect mode on stdin/input
+    let command = match cli.command {
+        Some(cmd) => cmd,
+        None => {
+            return auto_detect_mode(cli.input.as_ref(), cli.raw, cli.no_gloss).await;
+        }
+    };
 
     match command {
         Command::Analyze {
@@ -615,9 +629,8 @@ async fn main() -> Result<()> {
             preset: preset_name,
             transform,
             command,
-            raw,
         } => {
-            gloss_command(&input, preset_name, transform, command, raw).await?;
+            gloss_command(&input, preset_name, transform, command, cli.raw).await?;
         }
         Command::Presets => {
             list_presets()?;
@@ -651,6 +664,85 @@ fn list_presets() -> Result<()> {
     Ok(())
 }
 
+/// Auto-detect mode: read lines, detect preset, apply gloss
+async fn auto_detect_mode(
+    input: Option<&PathBuf>,
+    raw: bool,
+    no_gloss: bool,
+) -> Result<()> {
+    use std::io::{self, BufRead};
+
+    // Load all presets at startup
+    let mut mgr = preset::PresetManager::new();
+    mgr.load_all()?;
+
+    let presets: Vec<_> = mgr.list().iter().filter_map(|name| {
+        mgr.get(name).map(|p| (name.to_string(), p.clone()))
+    }).collect();
+
+    if presets.is_empty() {
+        eprintln!("Warning: No presets found. Install presets to ~/.config/linewise/presets/");
+    }
+
+    // Read input
+    let reader: Box<dyn BufRead> = match input {
+        Some(path) => Box::new(io::BufReader::new(File::open(path)?)),
+        None => Box::new(io::BufReader::new(io::stdin())),
+    };
+
+    for line in reader.lines() {
+        let line = line?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            println!();
+            continue;
+        }
+
+        // Find matching preset
+        let record_bytes = trimmed.as_bytes().to_vec();
+        let matching_preset = presets.iter().find(|(_, p)| {
+            !p.detect.is_empty() && p.detect.iter().all(|rule| rule.matches(&record_bytes))
+        });
+
+        match matching_preset {
+            Some((name, preset)) => {
+                if let Some(ref gloss) = preset.gloss {
+                    match gloss.apply(trimmed).await {
+                        Ok(result) => {
+                            if no_gloss {
+                                // Just show the input was recognized
+                                println!("[{}] {}", name, trimmed);
+                            } else if raw {
+                                println!("{}", result);
+                            } else {
+                                // Extract fields
+                                let gloss_fields: Vec<_> = preset.fields.iter()
+                                    .filter(|f| f.from_gloss)
+                                    .collect();
+                                if gloss_fields.is_empty() {
+                                    println!("{}", result);
+                                } else {
+                                    print_extracted_fields(trimmed, &result, &gloss_fields);
+                                }
+                            }
+                        }
+                        Err(e) => eprintln!("[{}] Error: {}", name, e),
+                    }
+                } else {
+                    // Preset matched but no gloss - just output the line
+                    println!("[{}] {}", name, trimmed);
+                }
+            }
+            None => {
+                // No matching preset - pass through
+                println!("{}", trimmed);
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Apply gloss transform to input
 async fn gloss_command(
     input: &PathBuf,
@@ -677,6 +769,7 @@ async fn gloss_command(
             base85_charset: None,
             command: Some(cmd.split_whitespace().map(String::from).collect()),
             segment: None,
+            fallback: None,
             cache: true,
         }
     } else if let Some(t) = transform {
@@ -685,6 +778,7 @@ async fn gloss_command(
             base85_charset: None,
             command: None,
             segment: None,
+            fallback: None,
             cache: true,
         }
     } else if let Some(ref p) = preset {

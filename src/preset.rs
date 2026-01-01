@@ -162,6 +162,9 @@ pub struct GlossConfig {
     /// If set, only the captured segment is passed to the transform/command
     #[serde(default)]
     pub segment: Option<String>,
+    /// Fallback transform if command fails: base85, base64, hex, input
+    #[serde(default)]
+    pub fallback: Option<String>,
     /// Cache transformed results
     #[serde(default = "default_true")]
     pub cache: bool,
@@ -259,10 +262,41 @@ impl GlossConfig {
 
         // Try external command
         if let Some(cmd) = &self.command {
-            return self.apply_command(cmd, &input).await;
+            match self.apply_command(cmd, &input).await {
+                Ok(result) => return Ok(result),
+                Err(_) => {
+                    // Command failed - try fallback if configured
+                    if let Some(fallback) = &self.fallback {
+                        return self.apply_fallback(fallback, &input);
+                    }
+                    // No fallback - return input as-is with marker
+                    return Ok(format!("[decode failed] {}", input));
+                }
+            }
         }
 
         Ok(input)
+    }
+
+    /// Apply fallback transform when command fails
+    fn apply_fallback(&self, fallback: &str, input: &str) -> Result<String> {
+        match fallback {
+            "input" => Ok(input.to_string()),
+            "hex" => {
+                // Try to decode as base85 and show hex
+                let charset = self
+                    .base85_charset
+                    .as_ref()
+                    .and_then(|name| base85_charsets::get(name))
+                    .unwrap_or(&base85_charsets::BL4);
+                match base85_charsets::decode(input, charset) {
+                    Ok(bytes) => Ok(format!("[hex] {}", hex::encode(&bytes))),
+                    Err(_) => Ok(format!("[raw] {}", input)),
+                }
+            }
+            "base85" | "base64" => self.apply_builtin(fallback, input),
+            _ => Ok(input.to_string()),
+        }
     }
 
     /// Extract segment from record using regex pattern
