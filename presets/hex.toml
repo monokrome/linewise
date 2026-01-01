@@ -1,0 +1,18 @@
+# Hex-encoded data
+[preset]
+name = "hex"
+description = "Clean and format hex-encoded data"
+
+[records]
+format = "lines"
+
+[[detect]]
+type = "regex"
+pattern = "^[0-9a-fA-F\\s]+$"
+
+[[detect]]
+type = "min_length"
+value = 2
+
+[gloss]
+transform = "hex"

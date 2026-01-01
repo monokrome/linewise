@@ -1,0 +1,19 @@
+# Z85 (ZeroMQ Base85) encoded data
+[preset]
+name = "z85"
+description = "Decode Z85/ZeroMQ Base85 encoded data to hex"
+
+[records]
+format = "lines"
+
+[[detect]]
+type = "regex"
+pattern = "^[0-9a-zA-Z.\\-:+=^!/*?&<>()\\[\\]{}@%$#]+$"
+
+[[detect]]
+type = "min_length"
+value = 5
+
+[gloss]
+transform = "base85"
+base85_charset = "z85"

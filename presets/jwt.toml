@@ -1,0 +1,25 @@
+# JSON Web Tokens
+[preset]
+name = "jwt"
+description = "Decode JWT tokens (header and payload)"
+
+[records]
+format = "lines"
+
+[[detect]]
+type = "regex"
+pattern = "^eyJ[A-Za-z0-9_-]+\\.eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$"
+
+# JWT has 3 parts separated by dots - decode the header and payload (first two)
+# Note: This uses a simple base64 decode; a proper JWT decoder would be better
+[gloss]
+segment = "eyJ[A-Za-z0-9_-]+"
+transform = "base64"
+
+[[fields]]
+name = "header"
+pattern = "^([^.]+)"
+
+[[fields]]
+name = "payload"
+pattern = "^[^.]+\\.([^.]+)"

@@ -238,6 +238,10 @@ enum Command {
         /// External command to run for transform
         #[arg(short, long)]
         command: Option<String>,
+
+        /// Show raw output instead of extracted fields
+        #[arg(short, long)]
+        raw: bool,
     },
 
     /// List available presets
@@ -611,8 +615,9 @@ async fn main() -> Result<()> {
             preset: preset_name,
             transform,
             command,
+            raw,
         } => {
-            gloss_command(&input, preset_name, transform, command).await?;
+            gloss_command(&input, preset_name, transform, command, raw).await?;
         }
         Command::Presets => {
             list_presets()?;
@@ -652,8 +657,18 @@ async fn gloss_command(
     preset_name: Option<String>,
     transform: Option<String>,
     command: Option<String>,
+    raw: bool,
 ) -> Result<()> {
     use std::io::{self, BufRead};
+
+    // Load preset if specified (for field extraction)
+    let preset = if let Some(ref name) = preset_name {
+        let mut mgr = preset::PresetManager::new();
+        mgr.load_all()?;
+        mgr.get(name).cloned()
+    } else {
+        None
+    };
 
     // Build gloss config
     let gloss = if let Some(cmd) = command {
@@ -672,15 +687,18 @@ async fn gloss_command(
             segment: None,
             cache: true,
         }
-    } else if let Some(name) = preset_name {
-        let mut mgr = preset::PresetManager::new();
-        mgr.load_all()?;
-        mgr.get(&name)
-            .and_then(|p| p.gloss.clone())
-            .ok_or_else(|| anyhow::anyhow!("Preset '{}' not found or has no gloss config", name))?
+    } else if let Some(ref p) = preset {
+        p.gloss.clone()
+            .ok_or_else(|| anyhow::anyhow!("Preset has no gloss config"))?
     } else {
         anyhow::bail!("Must specify --preset, --transform, or --command");
     };
+
+    // Get field extractors for gloss output
+    let gloss_fields: Vec<_> = preset
+        .as_ref()
+        .map(|p| p.fields.iter().filter(|f| f.from_gloss).collect())
+        .unwrap_or_default();
 
     // Read input lines
     let reader: Box<dyn BufRead> = if input.to_string_lossy() == "-" {
@@ -698,12 +716,43 @@ async fn gloss_command(
         }
 
         match gloss.apply(trimmed).await {
-            Ok(result) => println!("{}", result),
+            Ok(result) => {
+                if raw || gloss_fields.is_empty() {
+                    // Raw mode or no field extraction - print full output
+                    println!("{}", result);
+                } else {
+                    // Extract and display fields
+                    print_extracted_fields(trimmed, &result, &gloss_fields);
+                }
+            }
             Err(e) => eprintln!("# Error: {}", e),
         }
     }
 
     Ok(())
+}
+
+/// Extract and print fields from gloss output
+fn print_extracted_fields(input: &str, gloss_output: &str, fields: &[&preset::FieldExtractor]) {
+    // Find max field name length for alignment
+    let max_name_len = fields.iter().map(|f| f.name.len()).max().unwrap_or(0);
+    let max_name_len = max_name_len.max(5); // At least "Input" width
+
+    // First show the input segment
+    println!("{:>width$}: {}", "Input", input, width = max_name_len);
+
+    // Extract each field from the gloss output
+    for field in fields {
+        if let Ok(re) = regex::Regex::new(&field.pattern) {
+            if let Some(caps) = re.captures(gloss_output) {
+                let value = caps.get(1).or_else(|| caps.get(0))
+                    .map(|m| m.as_str())
+                    .unwrap_or("");
+                println!("{:>width$}: {}", field.name, value, width = max_name_len);
+            }
+        }
+    }
+    println!(); // Blank line between records
 }
 
 fn split_by_header(records: &[Vec<u8>], header_len: usize, output_dir: &PathBuf) -> Result<()> {
